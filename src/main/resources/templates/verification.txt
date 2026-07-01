@@ -1,0 +1,7 @@
+Hello,
+
+Please confirm your email address by opening this link:
+
+{link}
+
+If you did not request this, you can safely ignore this message.
