@@ -13,10 +13,10 @@ Only open items. History = git log.
 - **Spięcie z microservice-security** — security POST-uje tu przez `EmailServiceClient`
   (notifiery `Http*Notifier` zamiast placeholderów logujących).
 - **Walidacja na boundary** — Bean Validation (`@NotBlank`, `@Email`); zniekształcona komenda → 400.
+- **Dokumentacja jak w security** — kontrakt `/mails` w Gherkinie (`send-mail.feature`,
+  quarkiverse quarkus-cucumber) + Allure (junit5 i cucumber7); glosariusz skanuje warstwy BCE.
 
 ## Otwarte
 - **Realny SMTP** — konfiguracja hosta/portu/poświadczeń przez env na deployu (dziś dev=mock).
 - **HTML** — dziś tylko plain text; te same szablony Qute mogą dostać wariant HTML.
 - **Odporność** — retry/kolejka na błędy SMTP, idempotencja (id komendy), rate limiting.
-- **Dokumentacja jak w security** — cucumber (kontrakt `/mails`); glosariusz skanuje już warstwy
-  BCE (`build_glossary.py` rozpoznaje boundary/control/entity).

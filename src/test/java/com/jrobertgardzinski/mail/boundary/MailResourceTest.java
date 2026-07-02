@@ -1,5 +1,7 @@
 package com.jrobertgardzinski.mail.boundary;
 
+import io.qameta.allure.Epic;
+import io.qameta.allure.Feature;
 import io.quarkus.mailer.MockMailbox;
 import io.quarkus.test.junit.QuarkusTest;
 import jakarta.inject.Inject;
@@ -18,6 +20,8 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
  * are refused with 400; the templated endpoints render the action link into the body.
  */
 @QuarkusTest
+@Epic("Boundary")
+@Feature("Mail commands")
 class MailResourceTest {
 
     private static final String KEY = "test-key";
