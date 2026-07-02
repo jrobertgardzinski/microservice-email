@@ -14,8 +14,8 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /**
  * Black-box tests of the boundary: mails posted with the API key are sent (captured by
- * {@link MockMailbox}, so no real SMTP); without the key the request is refused; the templated
- * endpoints render the action link into the body.
+ * {@link MockMailbox}, so no real SMTP); without the key the request is refused; malformed commands
+ * are refused with 400; the templated endpoints render the action link into the body.
  */
 @QuarkusTest
 class MailResourceTest {
@@ -40,6 +40,21 @@ class MailResourceTest {
         List<io.quarkus.mailer.Mail> sent = mailbox.getMailsSentTo("user@example.com");
         assertEquals(1, sent.size());
         assertEquals("Hi", sent.get(0).getSubject());
+    }
+
+    @Test
+    void posting_a_malformed_mail_is_refused() {
+        given().header("X-Api-Key", KEY).contentType("application/json")
+                .body("{\"to\":\"not-an-address\",\"subject\":\"Hi\",\"text\":\"Hello\"}")
+                .when().post("/mails")
+                .then().statusCode(400);
+
+        given().header("X-Api-Key", KEY).contentType("application/json")
+                .body("{\"to\":\"user@example.com\",\"subject\":\"\",\"text\":\"Hello\"}")
+                .when().post("/mails")
+                .then().statusCode(400);
+
+        assertEquals(0, mailbox.getTotalMessagesSent());
     }
 
     @Test
