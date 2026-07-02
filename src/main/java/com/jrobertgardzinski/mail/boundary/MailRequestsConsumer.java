@@ -56,10 +56,12 @@ public class MailRequestsConsumer {
             return Uni.createFrom().voidItem();
         }
         String type = event.path("type").asText();
-        LinkMail mail = new LinkMail(event.path("to").asText(), event.path("link").asText());
+        String to = event.path("to").asText();
         return switch (type) {
-            case "VERIFICATION" -> dispatcher.sendVerificationLink(mail);
-            case "PASSWORD_RESET" -> dispatcher.sendPasswordResetLink(mail);
+            case "VERIFICATION" -> dispatcher.sendVerificationLink(new LinkMail(to, event.path("link").asText()));
+            case "PASSWORD_RESET" -> dispatcher.sendPasswordResetLink(new LinkMail(to, event.path("link").asText()));
+            case "ACCOUNT_DELETED" -> dispatcher.sendAccountDeleted(to);
+            case "ACCOUNT_DELETION_FAILED" -> dispatcher.sendAccountDeletionFailed(to);
             default -> {
                 LOG.warnf("dropping mail request %s of unknown type '%s'", id, type);
                 yield Uni.createFrom().voidItem();

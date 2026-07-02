@@ -1,0 +1,6 @@
+Hello,
+
+We could not complete the deletion of your account this time, so it stays active
+and you can sign in again. Please retry the deletion later.
+
+Sorry for the inconvenience.

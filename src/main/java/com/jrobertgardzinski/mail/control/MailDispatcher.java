@@ -30,6 +30,14 @@ public class MailDispatcher {
     @Location("password-reset")
     Template passwordReset;
 
+    @Inject
+    @Location("account-deleted")
+    Template accountDeleted;
+
+    @Inject
+    @Location("account-deletion-failed")
+    Template accountDeletionFailed;
+
     public Uni<Void> dispatch(Mail mail) {
         return mailer.send(io.quarkus.mailer.Mail.withText(mail.to(), mail.subject(), mail.text()));
     }
@@ -42,5 +50,14 @@ public class MailDispatcher {
     public Uni<Void> sendPasswordResetLink(LinkMail mail) {
         String body = passwordReset.data("link", mail.link()).render();
         return mailer.send(io.quarkus.mailer.Mail.withText(mail.to(), "Reset your password", body));
+    }
+
+    public Uni<Void> sendAccountDeleted(String to) {
+        return mailer.send(io.quarkus.mailer.Mail.withText(to, "Your account is deleted", accountDeleted.render()));
+    }
+
+    public Uni<Void> sendAccountDeletionFailed(String to) {
+        return mailer.send(io.quarkus.mailer.Mail.withText(
+                to, "We could not delete your account", accountDeletionFailed.render()));
     }
 }
