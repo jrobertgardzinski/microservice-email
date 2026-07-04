@@ -1,7 +1,10 @@
 Feature: Sending mail on behalf of trusted services
 
-  The mail service is internal: only callers presenting the shared API key may send,
-  and malformed commands are refused before anything is dispatched.
+  The mail service is internal: only callers presenting the shared API key may send a MAIL,
+  and a malformed MAIL command is refused before anything is dispatched.
+
+  Nouns:
+    MAIL -> Mail
 
   Scenario: a trusted service sends a plain mail
     When a trusted service posts a mail to "user@example.com" with subject "Hi"
