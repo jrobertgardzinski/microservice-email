@@ -20,10 +20,17 @@ Only open items. History = git log.
   quarkiverse quarkus-cucumber) + Allure (junit5 i cucumber7); glosariusz skanuje warstwy BCE.
 
 ## Otwarte
-- **Realny SMTP** — konfiguracja hosta/portu/poświadczeń przez env na deployu (dziś dev=mock).
+- **Realny SMTP** — kod gotowy (QUARKUS_MAILER_HOST/PORT/USERNAME/PASSWORD przez env,
+  udokumentowane w application.properties); zostaje czynność wdrożeniowa: realne poświadczenia
+  na produkcyjnym stacku.
 - ~~HTML~~ — ZROBIONE (2026-07-04): każdy szablon ma wariant .html (multipart: plain text jako
   dostępny fallback + HTML z przyciskiem akcji); @Location jawnie nazywa sufiks.
 - **Odporność** — kolejka + idempotencja + retry ZROBIONE: konsument ponawia błąd SMTP
   z backoffem (3 retry, 1s→8s), dedup zapamiętuje event dopiero PO wysłaniu (redelivery po
   crashu wciąż dostarcza), po wyczerpaniu prób loguje głośno i jedzie dalej (partycja się nie
-  klinuje). Otwarte: rate limiting; dead-letter zamiast dropu po wyczerpaniu prób.
+  klinuje). RATE LIMITING — ZROBIONE (2026-07-04): stały limit/min na całym REST
+  (`mail.rate-limit.per-minute`, env MAIL_RATE_LIMIT_PER_MINUTE, default 120; 0 wyłącza),
+  429 + Retry-After; Kafka ma własne tempo (topik buforuje). DEAD-LETTER — ZROBIONE:
+  po wyczerpaniu prób event PARKOWANY na `mail-requests-dlq` z awarią i liczbą prób
+  (nic nie ginie po cichu; operator/re-drive znajdzie całość w jednym miejscu); test
+  z zamockowanym dispatcherem i in-memory sinkiem. Otwarte: re-drive job dla DLQ.

@@ -7,6 +7,8 @@ import com.jrobertgardzinski.mail.entity.LinkMail;
 import io.smallrye.mutiny.Uni;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import org.eclipse.microprofile.reactive.messaging.Channel;
+import org.eclipse.microprofile.reactive.messaging.Emitter;
 import org.eclipse.microprofile.reactive.messaging.Incoming;
 import org.jboss.logging.Logger;
 
@@ -23,7 +25,9 @@ import java.util.Set;
  * shared store takes over when this service scales out). Unknown types are logged and dropped, so
  * one bad event never wedges the partition. An SMTP hiccup is retried with backoff; only a send
  * that keeps failing is given up on (logged loudly) — and an event is remembered as processed
- * ONLY after its mail actually went out, so a redelivery after a crash still delivers.
+ * ONLY after its mail actually went out, so a redelivery after a crash still delivers. A send
+ * that keeps failing is PARKED on the dead-letter topic with the failure attached — nothing is
+ * silently lost, and an operator (or a future re-drive job) finds the whole story in one place.
  */
 @ApplicationScoped
 public class MailRequestsConsumer {
@@ -38,6 +42,10 @@ public class MailRequestsConsumer {
 
     @Inject
     ObjectMapper mapper;
+
+    @Inject
+    @Channel("mail-requests-dlq")
+    Emitter<String> deadLetters;
 
     private final Set<String> processedIds = Collections.newSetFromMap(
             Collections.synchronizedMap(new LinkedHashMap<>() {
@@ -82,10 +90,28 @@ public class MailRequestsConsumer {
                     }
                 })
                 .onFailure().recoverWithUni(smtpDown -> {
-                    LOG.errorf(smtpDown, "giving up on mail request %s (%s to %s) after %d attempts",
-                            id, type, to, SMTP_RETRIES + 1);
-                    return Uni.createFrom().voidItem();
+                    LOG.errorf(smtpDown, "parking mail request %s (%s to %s) on the dead-letter "
+                            + "topic after %d attempts", id, type, to, SMTP_RETRIES + 1);
+                    return park(payload, smtpDown);
                 });
+    }
+
+    /** The original event plus what killed it, parked for an operator or a re-drive job. */
+    private Uni<Void> park(String payload, Throwable smtpDown) {
+        try {
+            var parked = mapper.createObjectNode();
+            parked.set("event", mapper.readTree(payload));
+            parked.put("failure", String.valueOf(smtpDown.getMessage()))
+                    .put("attempts", SMTP_RETRIES + 1);
+            return Uni.createFrom().completionStage(deadLetters.send(mapper.writeValueAsString(parked)))
+                    .onFailure().recoverWithUni(dlqDown -> {
+                        LOG.errorf(dlqDown, "the dead-letter topic is down too; the event is lost: %s", payload);
+                        return Uni.createFrom().voidItem();
+                    });
+        } catch (Exception impossible) {
+            LOG.errorf(impossible, "could not park %s", payload);
+            return Uni.createFrom().voidItem();
+        }
     }
 
     /** The resilience policy, alone: retry an SMTP hiccup with exponential backoff. */
