@@ -41,5 +41,16 @@ POST /mails/password-reset                             # templated: password-res
 ../mvnw -f pom.xml quarkus:dev   # dev mode; mails are logged, not sent (quarkus.mailer.mock)
 ```
 
-Production SMTP is configured at deploy via env vars (`QUARKUS_MAILER_HOST`, `_PORT`,
-`_USERNAME`, `_PASSWORD`); see `application.properties`.
+Production SMTP is configured at deploy via env vars, read by the `%prod` profile in
+`application.properties`:
+
+| env var | meaning | default |
+|---|---|---|
+| `MAIL_SMTP_HOST` | submission host | **required** (startup fails fast if unset) |
+| `MAIL_SMTP_PORT` | submission port | `587` |
+| `MAIL_SMTP_USERNAME` / `MAIL_SMTP_PASSWORD` | credentials | — |
+| `MAIL_SMTP_START_TLS` | STARTTLS policy | `REQUIRED` |
+| `MAIL_FROM` | envelope sender | `no-reply@jrobertgardzinski.com` |
+
+Run with `-Dquarkus.profile=prod` (or `QUARKUS_PROFILE=prod`). Dev and test never touch a real
+server — dev logs, tests use `MockMailbox`.
