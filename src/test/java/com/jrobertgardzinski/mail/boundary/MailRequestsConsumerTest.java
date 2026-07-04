@@ -48,6 +48,8 @@ class MailRequestsConsumerTest {
         List<Mail> sent = mailbox.getMailsSentTo("user@example.com");
         assertEquals("Verify your email", sent.get(0).getSubject());
         assertTrue(sent.get(0).getText().contains("https://app/verify?token=abc"));
+        assertTrue(sent.get(0).getHtml().contains("https://app/verify?token=abc"),
+                "the mail is multipart: an HTML body rides along with the plain-text fallback");
     }
 
     @Test

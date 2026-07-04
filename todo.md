@@ -21,6 +21,9 @@ Only open items. History = git log.
 
 ## Otwarte
 - **Realny SMTP** — konfiguracja hosta/portu/poświadczeń przez env na deployu (dziś dev=mock).
-- **HTML** — dziś tylko plain text; te same szablony Qute mogą dostać wariant HTML.
-- **Odporność** — kolejka + idempotencja ZROBIONE (Kafka at-least-once + dedup po id);
-  otwarte: retry na błędy SMTP po stronie konsumenta, rate limiting.
+- ~~HTML~~ — ZROBIONE (2026-07-04): każdy szablon ma wariant .html (multipart: plain text jako
+  dostępny fallback + HTML z przyciskiem akcji); @Location jawnie nazywa sufiks.
+- **Odporność** — kolejka + idempotencja + retry ZROBIONE: konsument ponawia błąd SMTP
+  z backoffem (3 retry, 1s→8s), dedup zapamiętuje event dopiero PO wysłaniu (redelivery po
+  crashu wciąż dostarcza), po wyczerpaniu prób loguje głośno i jedzie dalej (partycja się nie
+  klinuje). Otwarte: rate limiting; dead-letter zamiast dropu po wyczerpaniu prób.
