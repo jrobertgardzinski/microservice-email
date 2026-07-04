@@ -33,4 +33,7 @@ Only open items. History = git log.
   429 + Retry-After; Kafka ma własne tempo (topik buforuje). DEAD-LETTER — ZROBIONE:
   po wyczerpaniu prób event PARKOWANY na `mail-requests-dlq` z awarią i liczbą prób
   (nic nie ginie po cichu; operator/re-drive znajdzie całość w jednym miejscu); test
-  z zamockowanym dispatcherem i in-memory sinkiem. Otwarte: re-drive job dla DLQ.
+  z zamockowanym dispatcherem i in-memory sinkiem. RE-DRIVE — ZROBIONY (2026-07-04): rejestr zaparkowanych czytany z topiku DLQ do
+  ograniczonego ledgera (topik pozostaje trwałym zapisem), `GET /mails/dlq` listuje,
+  `POST /mails/dlq/{id}/redrive` pcha event z powrotem NORMALNĄ ścieżką doręczenia (te same
+  retry, to samo parkowanie gdy świat dalej leży); za kluczem API jak reszta.
