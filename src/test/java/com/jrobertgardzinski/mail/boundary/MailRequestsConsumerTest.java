@@ -53,6 +53,19 @@ class MailRequestsConsumerTest {
     }
 
     @Test
+    void an_already_registered_notice_event_becomes_a_mail() {
+        connector.source("mail-requests").send(
+                "{\"id\":\"e3\",\"type\":\"ALREADY_REGISTERED\",\"to\":\"owner@example.com\"}");
+
+        await().until(() -> mailbox.getMailsSentTo("owner@example.com").size() == 1);
+        Mail sent = mailbox.getMailsSentTo("owner@example.com").get(0);
+        assertEquals("You already have an account", sent.getSubject());
+        assertTrue(sent.getText().contains("already has one"));
+        assertTrue(sent.getHtml().contains("already has one"),
+                "the mail is multipart: an HTML body rides along with the plain-text fallback");
+    }
+
+    @Test
     void a_redelivered_event_is_deduplicated_and_garbage_is_dropped() {
         connector.source("mail-requests").send("not json at all");
         connector.source("mail-requests").send(

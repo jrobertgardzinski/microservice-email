@@ -56,6 +56,14 @@ public class MailDispatcher {
     @Location("account-deletion-failed.html")
     Template accountDeletionFailedHtml;
 
+    @Inject
+    @Location("already-registered.txt")
+    Template alreadyRegistered;
+
+    @Inject
+    @Location("already-registered.html")
+    Template alreadyRegisteredHtml;
+
     public Uni<Void> dispatch(Mail mail) {
         return mailer.send(io.quarkus.mailer.Mail.withText(mail.to(), mail.subject(), mail.text()));
     }
@@ -80,6 +88,12 @@ public class MailDispatcher {
     public Uni<Void> sendAccountDeletionFailed(String to) {
         return mailer.send(multipart(to, "We could not delete your account",
                 accountDeletionFailed.render(), accountDeletionFailedHtml.render()));
+    }
+
+    /** The anti-enumeration side channel: only the address owner learns the account exists. */
+    public Uni<Void> sendAlreadyRegistered(String to) {
+        return mailer.send(multipart(to, "You already have an account",
+                alreadyRegistered.render(), alreadyRegisteredHtml.render()));
     }
 
     private static io.quarkus.mailer.Mail multipart(String to, String subject, String text, String html) {
