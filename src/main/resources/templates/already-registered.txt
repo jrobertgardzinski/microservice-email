@@ -4,7 +4,8 @@ Someone — most likely you — just tried to create an account with this e-mail
 address, but the address already has one.
 
 If it was you: simply sign in. Forgot the password? Use "reset password" on the
-sign-in page.
+sign-in page. If you originally signed up with a social account (e.g. Google),
+sign in that way — or set a password through the same "reset password" link.
 
 If it was not you: no action is needed. No account was created and nothing
 about yours has changed.
