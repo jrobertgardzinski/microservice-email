@@ -1,7 +1,8 @@
 Hello,
 
-Someone — most likely you — just tried to create an account with this e-mail
-address, but the address already has one.
+Someone — most likely you — just tried to use this e-mail address
+(creating an account, or attaching it to another one), but the address already has an
+account of its own.
 
 If it was you: simply sign in. Forgot the password? Use "reset password" on the
 sign-in page. If you originally signed up with a social account (e.g. Google),
