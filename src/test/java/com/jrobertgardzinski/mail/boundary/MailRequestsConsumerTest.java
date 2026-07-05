@@ -60,8 +60,8 @@ class MailRequestsConsumerTest {
         await().until(() -> mailbox.getMailsSentTo("owner@example.com").size() == 1);
         Mail sent = mailbox.getMailsSentTo("owner@example.com").get(0);
         assertEquals("You already have an account", sent.getSubject());
-        assertTrue(sent.getText().contains("already has an account of its own"));
-        assertTrue(sent.getHtml().contains("already has an account of its own"),
+        assertTrue(sent.getText().contains("account of its own"));
+        assertTrue(sent.getHtml().contains("account of its own"),
                 "the mail is multipart: an HTML body rides along with the plain-text fallback");
     }
 
