@@ -64,6 +64,14 @@ public class MailDispatcher {
     @Location("already-registered.html")
     Template alreadyRegisteredHtml;
 
+    @Inject
+    @Location("auth-code.txt")
+    Template authCode;
+
+    @Inject
+    @Location("auth-code.html")
+    Template authCodeHtml;
+
     public Uni<Void> dispatch(Mail mail) {
         return mailer.send(io.quarkus.mailer.Mail.withText(mail.to(), mail.subject(), mail.text()));
     }
@@ -78,6 +86,13 @@ public class MailDispatcher {
         return mailer.send(multipart(mail.to(), "Reset your password",
                 passwordReset.data("link", mail.link()).render(),
                 passwordResetHtml.data("link", mail.link()).render()));
+    }
+
+    /** A one-time MFA sign-in code — short-lived, quoted back on the sign-in screen. */
+    public Uni<Void> sendAuthCode(String to, String code) {
+        return mailer.send(multipart(to, "Your sign-in code",
+                authCode.data("code", code).render(),
+                authCodeHtml.data("code", code).render()));
     }
 
     public Uni<Void> sendAccountDeleted(String to) {

@@ -66,6 +66,19 @@ class MailRequestsConsumerTest {
     }
 
     @Test
+    void an_auth_code_event_becomes_a_mail_with_the_code() {
+        connector.source("mail-requests").send(
+                "{\"id\":\"e4\",\"type\":\"AUTH_CODE\",\"to\":\"signin@example.com\",\"code\":\"482913\"}");
+
+        await().until(() -> mailbox.getMailsSentTo("signin@example.com").size() == 1);
+        Mail sent = mailbox.getMailsSentTo("signin@example.com").get(0);
+        assertEquals("Your sign-in code", sent.getSubject());
+        assertTrue(sent.getText().contains("482913"));
+        assertTrue(sent.getHtml().contains("482913"),
+                "the mail is multipart: an HTML body rides along with the plain-text fallback");
+    }
+
+    @Test
     void a_redelivered_event_is_deduplicated_and_garbage_is_dropped() {
         connector.source("mail-requests").send("not json at all");
         connector.source("mail-requests").send(

@@ -76,6 +76,7 @@ public class MailRequestsConsumer {
             case "ACCOUNT_DELETED" -> dispatcher.sendAccountDeleted(to);
             case "ACCOUNT_DELETION_FAILED" -> dispatcher.sendAccountDeletionFailed(to);
             case "ALREADY_REGISTERED" -> dispatcher.sendAlreadyRegistered(to);
+            case "AUTH_CODE" -> dispatcher.sendAuthCode(to, event.path("code").asText());
             default -> {
                 LOG.warnf("dropping mail request %s of unknown type '%s'", id, type);
                 yield null;
