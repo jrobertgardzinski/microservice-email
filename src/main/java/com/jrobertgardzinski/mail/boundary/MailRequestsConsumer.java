@@ -100,6 +100,7 @@ public class MailRequestsConsumer {
         }
         String type = event.path("type").asText();
         String to = event.path("to").asText();
+        LOG.infof("mail request received (%s to %s)", type, to);   // carries the cid via the log format
         Uni<Void> delivery = switch (type) {
             case "VERIFICATION" -> dispatcher.sendVerificationLink(new LinkMail(to, event.path("link").asText()));
             case "PASSWORD_RESET" -> dispatcher.sendPasswordResetLink(new LinkMail(to, event.path("link").asText()));
