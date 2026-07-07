@@ -38,7 +38,7 @@ public class DlqResource {
     @Path("/{id}/redrive")
     public Uni<Response> redrive(@PathParam("id") String id) {
         return parked.take(id)
-                .map(record -> consumer.consume(record.get("event").toString())
+                .map(record -> consumer.process(record.get("event").toString())
                         .replaceWith(Response.accepted().entity(Map.of("status", "REDRIVEN", "id", id)).build()))
                 .orElse(Uni.createFrom().item(
                         Response.status(Response.Status.NOT_FOUND)

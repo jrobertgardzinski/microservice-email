@@ -5,13 +5,18 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.jrobertgardzinski.mail.control.MailDispatcher;
 import com.jrobertgardzinski.mail.entity.LinkMail;
 import io.smallrye.mutiny.Uni;
+import io.smallrye.reactive.messaging.kafka.api.IncomingKafkaRecordMetadata;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import org.apache.kafka.common.header.Header;
 import org.eclipse.microprofile.reactive.messaging.Channel;
 import org.eclipse.microprofile.reactive.messaging.Emitter;
 import org.eclipse.microprofile.reactive.messaging.Incoming;
+import org.eclipse.microprofile.reactive.messaging.Message;
 import org.jboss.logging.Logger;
+import org.jboss.logging.MDC;
 
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.Collections;
 import java.util.LinkedHashMap;
@@ -55,7 +60,32 @@ public class MailRequestsConsumer {
             }));
 
     @Incoming("mail-requests")
-    public Uni<Void> consume(String payload) {
+    public Uni<Void> consume(Message<String> message) {
+        // continue the trace: security's outbox stamped the originating request's cid as a Kafka
+        // header. It rides the synchronous decision logs below; the async SMTP send runs on other
+        // threads (Mutiny), where MDC would need context propagation — a deliberate walking-skeleton
+        // trade-off, like the in-memory dedup set.
+        String cid = correlationId(message);
+        if (cid != null) {
+            MDC.put("cid", cid);
+        }
+        try {
+            return process(message.getPayload())
+                    .chain(() -> Uni.createFrom().completionStage(message.ack()));
+        } finally {
+            MDC.remove("cid");
+        }
+    }
+
+    private static String correlationId(Message<String> message) {
+        return message.getMetadata(IncomingKafkaRecordMetadata.class)
+                .map(md -> md.getHeaders().lastHeader("X-Correlation-Id"))
+                .map(header -> header == null ? null : new String(header.value(), StandardCharsets.UTF_8))
+                .orElse(null);
+    }
+
+    /** The delivery itself, without the Kafka envelope — reused by the DLQ re-drive endpoint. */
+    Uni<Void> process(String payload) {
         JsonNode event;
         try {
             event = mapper.readTree(payload);
