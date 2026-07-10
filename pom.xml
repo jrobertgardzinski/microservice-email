@@ -22,6 +22,7 @@
         <quarkus.platform.version>3.27.0</quarkus.platform.version>
         <quarkus-cucumber.version>1.3.0</quarkus-cucumber.version>
         <allure.version>2.29.0</allure.version>
+        <pact.version>4.6.17</pact.version>
         <compiler-plugin.version>3.13.0</compiler-plugin.version>
         <surefire-plugin.version>3.5.2</surefire-plugin.version>
     </properties>
@@ -114,6 +115,15 @@
             <artifactId>allure-cucumber7-jvm</artifactId>
             <scope>test</scope>
         </dependency>
+        <!-- consumer-driven contract: the pact test states which mail-request events this service
+             understands; the generated pact (pacts/, committed) is verified against the REAL
+             producer code by microservice-security's provider tests -->
+        <dependency>
+            <groupId>au.com.dius.pact.consumer</groupId>
+            <artifactId>junit5</artifactId>
+            <version>${pact.version}</version>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 
     <build>
@@ -146,6 +156,10 @@
                     <systemPropertyVariables>
                         <java.util.logging.manager>org.jboss.logmanager.LogManager</java.util.logging.manager>
                         <allure.results.directory>${project.build.directory}/allure-results</allure.results.directory>
+                        <!-- the contract test writes the pact here (committed, not target/) so the
+                             producer's provider tests can verify it from the sibling checkout -->
+                        <pact.rootDir>${project.basedir}/pacts</pact.rootDir>
+                        <pact_do_not_track>true</pact_do_not_track>
                     </systemPropertyVariables>
                 </configuration>
             </plugin>
