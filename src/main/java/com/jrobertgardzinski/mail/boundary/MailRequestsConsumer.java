@@ -52,6 +52,40 @@ public class MailRequestsConsumer {
     @Channel("mail-requests-dlq")
     Emitter<String> deadLetters;
 
+    /**
+     * A dead-letter record, KEYED BY EVENT ID.
+     *
+     * <p>The key is what makes this topic a ledger rather than a tape. Records went out unkeyed
+     * until now, and the whole design around them — an in-memory ledger rebuilt by replaying the
+     * entire topic, retractions instead of deletes — rested on the assumption that the topic keeps
+     * everything for ever. Nothing had ever configured it, so the broker's default applied: seven
+     * days. A mail parked over a holiday was silently swept by the broker, and after the next
+     * restart it was gone from the only window an operator has onto the dead-letter queue.
+     *
+     * <p>With a key and {@code cleanup.policy=compact} (see docker-compose.identity.yml), the topic
+     * keeps the LATEST record per event for ever: an unsettled mail keeps its parked record, and a
+     * settled one collapses to its retraction. Replay at startup therefore stays proportional to
+     * the number of DISTINCT parked mails rather than to the history of the service.
+     */
+    private java.util.concurrent.CompletionStage<Void> sendKeyed(String eventId, String body) {
+        // Emitter.send(Message) returns void, so the delivery signal is built from the message's own
+        // ack/nack. It has to exist: the callers below recover from a failed dead-letter write, and
+        // without a completion they would treat "never sent" as "sent".
+        java.util.concurrent.CompletableFuture<Void> settled = new java.util.concurrent.CompletableFuture<>();
+        deadLetters.send(org.eclipse.microprofile.reactive.messaging.Message.of(body)
+                .addMetadata(io.smallrye.reactive.messaging.kafka.api.OutgoingKafkaRecordMetadata
+                        .<String>builder().withKey(eventId).build())
+                .withAck(() -> {
+                    settled.complete(null);
+                    return java.util.concurrent.CompletableFuture.completedFuture(null);
+                })
+                .withNack(refused -> {
+                    settled.completeExceptionally(refused);
+                    return java.util.concurrent.CompletableFuture.completedFuture(null);
+                }));
+        return settled;
+    }
+
     private final Set<String> processedIds = Collections.newSetFromMap(
             Collections.synchronizedMap(new LinkedHashMap<>() {
                 protected boolean removeEldestEntry(Map.Entry<String, Boolean> eldest) {
@@ -169,7 +203,7 @@ public class MailRequestsConsumer {
     Uni<Void> markRedriven(String id) {
         try {
             String marker = mapper.writeValueAsString(mapper.createObjectNode().put("redriven", id));
-            return Uni.createFrom().completionStage(deadLetters.send(marker))
+            return Uni.createFrom().completionStage(sendKeyed(id, marker))
                     .onFailure().recoverWithUni(dlqDown -> {
                         // the mail HAS gone out; the worst case is that a replay shows it again
                         LOG.warnf(dlqDown, "could not retract re-driven %s from the dead-letter "
@@ -189,7 +223,8 @@ public class MailRequestsConsumer {
             parked.set("event", mapper.readTree(payload));
             parked.put("failure", String.valueOf(smtpDown.getMessage()))
                     .put("attempts", SMTP_RETRIES + 1);
-            return Uni.createFrom().completionStage(deadLetters.send(mapper.writeValueAsString(parked)))
+            return Uni.createFrom().completionStage(
+                            sendKeyed(eventId(payload), mapper.writeValueAsString(parked)))
                     .onFailure().recoverWithUni(dlqDown -> {
                         // no payload: at THIS point it parsed, so it is a real event carrying a real
                         // reset link or MFA code, and this is the one branch where it would reach the
