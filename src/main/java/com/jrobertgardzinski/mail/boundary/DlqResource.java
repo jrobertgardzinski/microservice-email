@@ -38,12 +38,22 @@ public class DlqResource {
     @Path("/{id}/redrive")
     public Uni<Response> redrive(@PathParam("id") String id) {
         return parked.take(id)
-                // the retraction rides AFTER the delivery: a re-drive that fails is parked again by
-                // the consumer itself, and retracting first would erase the record of a mail that
-                // never went out
+                // The retraction is published ONLY if the mail actually went out.
+                //
+                // This used to chain unconditionally, with a comment reasoning that "a re-drive that
+                // fails is parked again by the consumer itself" — true, and exactly half the story.
+                // The retraction then followed the re-parked record onto the same topic and removed
+                // it again, so an operator re-driving during an outage silently destroyed the only
+                // record of an undelivered password-reset or MFA mail, and got 202 REDRIVEN for it.
                 .map(record -> consumer.process(record.get("event").toString())
-                        .chain(() -> consumer.markRedriven(id))
-                        .replaceWith(Response.accepted().entity(Map.of("status", "REDRIVEN", "id", id)).build()))
+                        .chain(delivered -> delivered
+                                ? consumer.markRedriven(id).replaceWith(
+                                        Response.accepted()
+                                                .entity(Map.of("status", "REDRIVEN", "id", id)).build())
+                                // still broken: the event is back on the dead-letter topic, the
+                                // ledger will show it again, and the operator is told the truth
+                                : Uni.createFrom().item(Response.status(503)
+                                        .entity(Map.of("status", "PARKED_AGAIN", "id", id)).build())))
                 .orElse(Uni.createFrom().item(
                         Response.status(Response.Status.NOT_FOUND)
                                 .entity(Map.of("status", "NOT_PARKED", "id", id)).build()));

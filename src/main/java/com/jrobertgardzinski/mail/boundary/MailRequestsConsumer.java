@@ -70,8 +70,10 @@ public class MailRequestsConsumer {
             MDC.put("cid", cid);
         }
         try {
+            // the ack rides on SETTLED, not on delivered: a parked mail is handled too — its
+            // record is on the dead-letter topic, and not acking would replay it for ever
             return process(message.getPayload())
-                    .chain(() -> Uni.createFrom().completionStage(message.ack()));
+                    .chain(settled -> Uni.createFrom().completionStage(message.ack()));
         } finally {
             MDC.remove("cid");
         }
@@ -84,8 +86,17 @@ public class MailRequestsConsumer {
                 .orElse(null);
     }
 
-    /** The delivery itself, without the Kafka envelope — reused by the DLQ re-drive endpoint. */
-    Uni<Void> process(String payload) {
+    /**
+     * The delivery itself, without the Kafka envelope — reused by the DLQ re-drive endpoint.
+     *
+     * @return whether the mail actually WENT OUT. It used to return {@code Uni<Void>}, and that was
+     *         a trap rather than a simplification: every failure path here recovers (an SMTP outage
+     *         parks the event, and parking recovers its own failure too), so the Uni always
+     *         completed successfully and a caller had no way at all to tell a delivery from a
+     *         parking. The re-drive endpoint chained its retraction onto that Uni and therefore
+     *         retracted a mail that had just been parked again — see {@code DlqResource}.
+     */
+    Uni<Boolean> process(String payload) {
         JsonNode event;
         try {
             event = mapper.readTree(payload);
@@ -94,12 +105,13 @@ public class MailRequestsConsumer {
             // one-time MFA codes, and the logs ship to Loki. The record stays on the topic, which is
             // the durable evidence — the log only has to say that one arrived and could not be read.
             LOG.warnf("dropping malformed mail request (%d bytes)", payload.length());
-            return Uni.createFrom().voidItem();
+            return Uni.createFrom().item(false);
         }
         String id = event.path("id").asText();
         if (!id.isEmpty() && processedIds.contains(id)) {
             LOG.infof("skipping duplicate mail request %s", id);
-            return Uni.createFrom().voidItem();
+            // already delivered once, so from the caller's point of view this IS settled
+            return Uni.createFrom().item(true);
         }
         String type = event.path("type").asText();
         String to = event.path("to").asText();
@@ -117,7 +129,7 @@ public class MailRequestsConsumer {
             }
         };
         if (delivery == null) {
-            return Uni.createFrom().voidItem();
+            return Uni.createFrom().item(false);   // unknown type: dropped, not delivered
         }
         return withRetry(delivery, SMTP_BACKOFF)
                 .onItem().invoke(() -> {
@@ -125,10 +137,11 @@ public class MailRequestsConsumer {
                         processedIds.add(id);
                     }
                 })
+                .replaceWith(true)
                 .onFailure().recoverWithUni(smtpDown -> {
                     LOG.errorf(smtpDown, "parking mail request %s (%s to %s) on the dead-letter "
                             + "topic after %d attempts", id, type, masked(to), SMTP_RETRIES + 1);
-                    return park(payload, smtpDown);
+                    return park(payload, smtpDown).replaceWith(false);
                 });
     }
 
