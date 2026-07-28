@@ -85,8 +85,34 @@ class MailRequestsConsumerTest {
                 "{\"id\":\"e2\",\"type\":\"PASSWORD_RESET\",\"to\":\"dup@example.com\",\"link\":\"https://app/reset?token=x\"}");
         connector.source("mail-requests").send(
                 "{\"id\":\"e2\",\"type\":\"PASSWORD_RESET\",\"to\":\"dup@example.com\",\"link\":\"https://app/reset?token=x\"}");
+        // A CLOSER, and the whole point of this test. Waiting for "size() == 1" finishes the moment
+        // the FIRST mail lands, so a broken dedup that sent the second one a millisecond later left
+        // this test green — it proved that one mail arrives, never that only one does. The channel
+        // is sequential, so once a later event addressed elsewhere has been delivered, the duplicate
+        // ahead of it is definitively done being processed and the count below is final.
+        // a distinctive id on purpose: the dedup set is application-scoped and therefore shared by
+        // every test in this class, so reusing a plain "e3" gets the closer deduplicated away by a
+        // neighbouring test and this scenario hangs instead of asserting
+        connector.source("mail-requests").send(
+                "{\"id\":\"dedup-closer\",\"type\":\"ACCOUNT_DELETED\",\"to\":\"closer@example.com\"}");
 
-        await().until(() -> mailbox.getMailsSentTo("dup@example.com").size() == 1);
+        await().until(() -> mailbox.getMailsSentTo("closer@example.com").size() == 1);
+
+        assertEquals(1, mailbox.getMailsSentTo("dup@example.com").size(),
+                "the redelivery must not have produced a second password-reset mail");
         assertEquals("Reset your password", mailbox.getMailsSentTo("dup@example.com").get(0).getSubject());
+    }
+
+    @Test
+    void a_recipient_never_reaches_the_log_in_full() {
+        // the logs ship to Loki: a full recipient on every event turns them into a harvestable copy
+        // of the user table. Two characters and the domain are enough to recognise a report.
+        assertEquals("ro***@example.com", MailRequestsConsumer.masked("robert@example.com"));
+        assertEquals("a***@example.com", MailRequestsConsumer.masked("a@example.com"),
+                "a one-character local part must not be padded into something longer than it is");
+        assertEquals("***", MailRequestsConsumer.masked("not-an-address"),
+                "nothing to keep, so keep nothing — do not guess a local part that is not there");
+        assertEquals("***", MailRequestsConsumer.masked("@example.com"),
+                "an empty local part is not a local part");
     }
 }

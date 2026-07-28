@@ -65,4 +65,44 @@ class DlqRedriveTest {
                 .post("/mails/dlq/parked-7/redrive")
                 .then().statusCode(404);
     }
+
+    @Test
+    @DisplayName("a settled mail does not climb back onto the ledger when the topic is replayed")
+    void a_redriven_event_stays_gone_across_a_restart() {
+        // The ledger is in memory and is rebuilt by replaying the WHOLE dead-letter topic at every
+        // start — that is what makes it survive a restart during an outage, which is when restarts
+        // actually happen. Kafka has no delete, so the only way a re-driven mail stays settled is a
+        // retraction record of its own. Without one, every restart would hand the operator back
+        // every mail they ever fixed, for ever.
+        String parked = "{\"event\":{\"id\":\"parked-9\",\"type\":\"ACCOUNT_DELETED\","
+                + "\"to\":\"gone@example.com\"},\"failure\":\"connection refused\",\"attempts\":4}";
+        connector.source("mail-requests-dlq-in").send(parked);
+
+        await().atMost(Duration.ofSeconds(5)).until(() -> ledgerSize() == 1);
+        RestAssured.given().header("X-Api-Key", "test-key")
+                .post("/mails/dlq/parked-9/redrive").then().statusCode(202);
+        await().atMost(Duration.ofSeconds(5))
+                .until(() -> mailbox.getMailsSentTo("gone@example.com").size() == 1);
+
+        // the retraction is a real record on the dead-letter topic, not a local flag
+        String retraction = connector.<String>sink("mail-requests-dlq").received().stream()
+                .map(org.eclipse.microprofile.reactive.messaging.Message::getPayload)
+                .filter(p -> p.contains("redriven"))
+                .reduce((first, second) -> second)
+                .orElseThrow(() -> new AssertionError("a successful re-drive must retract the parked record"));
+        assertEquals("{\"redriven\":\"parked-9\"}", retraction);
+
+        // now the restart: the whole topic replays, original record first, retraction after
+        connector.source("mail-requests-dlq-in").send(parked);
+        connector.source("mail-requests-dlq-in").send(retraction);
+
+        await().atMost(Duration.ofSeconds(5)).until(() -> ledgerSize() == 0);
+        RestAssured.given().header("X-Api-Key", "test-key")
+                .post("/mails/dlq/parked-9/redrive").then().statusCode(404);
+    }
+
+    private int ledgerSize() {
+        return RestAssured.given().header("X-Api-Key", "test-key")
+                .get("/mails/dlq").jsonPath().getList("$").size();
+    }
 }

@@ -51,6 +51,18 @@
             <groupId>io.quarkus</groupId>
             <artifactId>quarkus-rest-jackson</artifactId>
         </dependency>
+        <!--
+          Health endpoints, and the reason is specific: this service's whole job runs on a Kafka
+          channel, and a channel can die while the HTTP port stays open. The probes used to be bare
+          TCP checks on 8080, so a consumer that had shut itself down looked perfectly healthy while
+          no verification mail, password reset or MFA code left the building. The reactive-messaging
+          extension contributes per-channel checks to /q/health automatically once this is present,
+          which is exactly the signal the probes were missing.
+        -->
+        <dependency>
+            <groupId>io.quarkus</groupId>
+            <artifactId>quarkus-smallrye-health</artifactId>
+        </dependency>
         <!-- observability: /q/metrics for the workspace's Prometheus+Grafana -->
         <dependency>
             <groupId>io.quarkus</groupId>

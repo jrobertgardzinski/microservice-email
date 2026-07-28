@@ -90,7 +90,10 @@ public class MailRequestsConsumer {
         try {
             event = mapper.readTree(payload);
         } catch (Exception malformed) {
-            LOG.warnf("dropping malformed mail request: %s", payload);
+            // the payload itself never reaches the log: these events carry password-reset links and
+            // one-time MFA codes, and the logs ship to Loki. The record stays on the topic, which is
+            // the durable evidence — the log only has to say that one arrived and could not be read.
+            LOG.warnf("dropping malformed mail request (%d bytes)", payload.length());
             return Uni.createFrom().voidItem();
         }
         String id = event.path("id").asText();
@@ -100,7 +103,7 @@ public class MailRequestsConsumer {
         }
         String type = event.path("type").asText();
         String to = event.path("to").asText();
-        LOG.infof("mail request received (%s to %s)", type, to);   // carries the cid via the log format
+        LOG.infof("mail request received (%s to %s)", type, masked(to));   // cid rides the log format
         Uni<Void> delivery = switch (type) {
             case "VERIFICATION" -> dispatcher.sendVerificationLink(new LinkMail(to, event.path("link").asText()));
             case "PASSWORD_RESET" -> dispatcher.sendPasswordResetLink(new LinkMail(to, event.path("link").asText()));
@@ -124,9 +127,46 @@ public class MailRequestsConsumer {
                 })
                 .onFailure().recoverWithUni(smtpDown -> {
                     LOG.errorf(smtpDown, "parking mail request %s (%s to %s) on the dead-letter "
-                            + "topic after %d attempts", id, type, to, SMTP_RETRIES + 1);
+                            + "topic after %d attempts", id, type, masked(to), SMTP_RETRIES + 1);
                     return park(payload, smtpDown);
                 });
+    }
+
+    /**
+     * An address reduced to what an operator needs to recognise a report and no more. Every mail
+     * request logged its recipient in full, and the logs go to Loki — which made the log an
+     * unadvertised copy of the user table, harvestable by anyone who can read it. Two characters
+     * and the domain still let a support conversation confirm "yes, that was your address".
+     */
+    static String masked(String address) {
+        int at = address.indexOf('@');
+        if (at <= 0) {
+            return "***";                      // no local part to keep: say nothing rather than guess
+        }
+        return address.substring(0, Math.min(2, at)) + "***" + address.substring(at);
+    }
+
+    /**
+     * Retracts a parked event once an operator has re-driven it successfully.
+     *
+     * <p>The ledger in {@link ParkedMails} is rebuilt by replaying the whole dead-letter topic at
+     * every start, so without this marker a settled mail would climb back into the operator's list
+     * after every restart — for good. Kafka has no delete, so the retraction is itself a record.
+     */
+    Uni<Void> markRedriven(String id) {
+        try {
+            String marker = mapper.writeValueAsString(mapper.createObjectNode().put("redriven", id));
+            return Uni.createFrom().completionStage(deadLetters.send(marker))
+                    .onFailure().recoverWithUni(dlqDown -> {
+                        // the mail HAS gone out; the worst case is that a replay shows it again
+                        LOG.warnf(dlqDown, "could not retract re-driven %s from the dead-letter "
+                                + "topic; it will reappear in the ledger after a restart", id);
+                        return Uni.createFrom().voidItem();
+                    });
+        } catch (Exception impossible) {
+            LOG.warnf(impossible, "could not retract re-driven %s", id);
+            return Uni.createFrom().voidItem();
+        }
     }
 
     /** The original event plus what killed it, parked for an operator or a re-drive job. */
@@ -138,12 +178,26 @@ public class MailRequestsConsumer {
                     .put("attempts", SMTP_RETRIES + 1);
             return Uni.createFrom().completionStage(deadLetters.send(mapper.writeValueAsString(parked)))
                     .onFailure().recoverWithUni(dlqDown -> {
-                        LOG.errorf(dlqDown, "the dead-letter topic is down too; the event is lost: %s", payload);
+                        // no payload: at THIS point it parsed, so it is a real event carrying a real
+                        // reset link or MFA code, and this is the one branch where it would reach the
+                        // log intact. The id is enough to correlate with the topic.
+                        LOG.errorf(dlqDown, "the dead-letter topic is down too; mail request %s "
+                                + "(%d bytes) is lost", eventId(payload), payload.length());
                         return Uni.createFrom().voidItem();
                     });
         } catch (Exception impossible) {
-            LOG.errorf(impossible, "could not park %s", payload);
+            LOG.errorf(impossible, "could not park mail request %s", eventId(payload));
             return Uni.createFrom().voidItem();
+        }
+    }
+
+    /** The event's id, or a placeholder — used where the alternative would be logging the payload. */
+    private String eventId(String payload) {
+        try {
+            String id = mapper.readTree(payload).path("id").asText();
+            return id.isEmpty() ? "<no id>" : id;
+        } catch (Exception unreadable) {
+            return "<unreadable>";
         }
     }
 

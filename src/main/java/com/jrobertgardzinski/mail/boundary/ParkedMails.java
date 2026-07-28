@@ -40,10 +40,20 @@ public class ParkedMails {
     public Uni<Void> onParked(String payload) {
         try {
             JsonNode parked = mapper.readTree(payload);
+            // a retraction, not a parked mail: an operator already re-drove this one successfully
+            // (MailRequestsConsumer#markRedriven). The channel replays the whole topic at every
+            // start, so without honouring these the ledger would hand back settled mails for ever.
+            JsonNode redriven = parked.get("redriven");
+            if (redriven != null) {
+                ledger.remove(redriven.asText());
+                return Uni.createFrom().voidItem();
+            }
             String id = parked.path("event").path("id").asText();
             ledger.put(id.isEmpty() ? "unidentified-" + ledger.size() : id, parked);
         } catch (Exception malformed) {
-            LOG.warnf("unreadable dead letter: %s", payload);
+            // never the payload: a parked record wraps the original event, reset links and MFA codes
+            // included, and these logs ship to Loki
+            LOG.warnf("unreadable dead letter (%d bytes)", payload.length());
         }
         return Uni.createFrom().voidItem();
     }

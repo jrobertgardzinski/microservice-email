@@ -38,7 +38,11 @@ public class DlqResource {
     @Path("/{id}/redrive")
     public Uni<Response> redrive(@PathParam("id") String id) {
         return parked.take(id)
+                // the retraction rides AFTER the delivery: a re-drive that fails is parked again by
+                // the consumer itself, and retracting first would erase the record of a mail that
+                // never went out
                 .map(record -> consumer.process(record.get("event").toString())
+                        .chain(() -> consumer.markRedriven(id))
                         .replaceWith(Response.accepted().entity(Map.of("status", "REDRIVEN", "id", id)).build()))
                 .orElse(Uni.createFrom().item(
                         Response.status(Response.Status.NOT_FOUND)
