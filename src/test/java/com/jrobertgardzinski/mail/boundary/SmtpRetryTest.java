@@ -6,6 +6,8 @@ import io.smallrye.mutiny.Uni;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
+import io.smallrye.mutiny.TimeoutException;
+
 import java.time.Duration;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -50,5 +52,20 @@ class SmtpRetryTest {
                 () -> MailRequestsConsumer.withRetry(dead, TINY).await().atMost(Duration.ofSeconds(5)));
         assertEquals(MailRequestsConsumer.SMTP_RETRIES + 1, attempts.get(),
                 "the first try plus every allowed retry");
+    }
+
+    @Test
+    @DisplayName("a send that never answers is bounded and fails, instead of hanging the channel")
+    void a_hung_send_does_not_wedge_the_channel() {
+        // The retry policy only reacts to a FAILURE, and a Uni that never emits never produces one.
+        // Until 2026-07-28 the commit strategy's age watchdog eventually noticed — by killing the
+        // consumer outright, which is why it was switched off. Taking that away without giving the
+        // attempt a deadline of its own would have swapped a loud failure for a silent one, and a
+        // half-open SMTP connection would stop every mail this service sends.
+        Uni<Void> neverAnswers = Uni.createFrom().nothing();
+
+        assertThrows(TimeoutException.class, () -> MailRequestsConsumer
+                .withRetry(neverAnswers, Duration.ofMillis(1), Duration.ofMillis(50))
+                .await().atMost(Duration.ofSeconds(5)));
     }
 }

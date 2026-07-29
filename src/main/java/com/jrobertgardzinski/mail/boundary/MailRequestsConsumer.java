@@ -249,9 +249,27 @@ public class MailRequestsConsumer {
         }
     }
 
-    /** The resilience policy, alone: retry an SMTP hiccup with exponential backoff. */
+    /**
+     * How long ONE attempt may take before it counts as failed.
+     *
+     * <p>An SMTP send that never completes — a half-open connection, a server that accepts and then
+     * says nothing — used to hang the channel for ever, because the retry policy only reacts to a
+     * FAILURE and a hung Uni never produces one. The commit strategy's age watchdog was the only
+     * thing that eventually noticed, and it was switched off on 2026-07-28 (for good reason: it
+     * killed the consumer outright). Removing that watchdog without giving the send a deadline of
+     * its own would have traded a loud failure for a silent one.
+     */
+    static final Duration SMTP_ATTEMPT_TIMEOUT = Duration.ofSeconds(30);
+
+    /** The resilience policy, alone: bound each attempt, then retry an SMTP hiccup with backoff. */
     static Uni<Void> withRetry(Uni<Void> send, Duration initialBackoff) {
-        return send.onFailure().retry()
+        return withRetry(send, initialBackoff, SMTP_ATTEMPT_TIMEOUT);
+    }
+
+    /** The same, with the per-attempt deadline spelled out — a test must not wait thirty seconds. */
+    static Uni<Void> withRetry(Uni<Void> send, Duration initialBackoff, Duration attemptTimeout) {
+        return send.ifNoItem().after(attemptTimeout).fail()
+                .onFailure().retry()
                 .withBackOff(initialBackoff, initialBackoff.multipliedBy(8))
                 .atMost(SMTP_RETRIES);
     }
