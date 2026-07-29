@@ -71,7 +71,10 @@ public class DlqResource {
         // then followed the re-parked record onto the same topic and removed it again, so an
         // operator re-driving during an outage silently destroyed the only record of an undelivered
         // password-reset or MFA mail, and got 202 REDRIVEN for it.
-        return consumer.process(record.get("event").toString())
+        // the id it is ALREADY filed under travels with it: a re-drive that fails is parked again,
+        // and a second parking that minted a fresh synthetic id would leave two records for one
+        // undelivered mail on a compacted topic — one duplicate in the operator's list per attempt
+        return consumer.process(record.get("event").toString(), id)
                 .chain(delivered -> delivered
                         ? consumer.markRedriven(id).replaceWith(
                                 Response.accepted()

@@ -102,10 +102,47 @@ class DlqLedgerKeysTest {
 
         assertEquals("nameless@example.com", listed(key).path("event").path("to").asText());
         // and it can be acted on under that id — the retraction the re-drive publishes will
-        // therefore land on the record it settles, instead of on a key nothing was ever written to
+        // therefore land on the record it settles, instead of on a key nothing was ever written to.
+        // 503 and not 202 because the dispatcher above is still refusing: the point is that the id
+        // was FOUND (404 would mean the ledger files records under a name the topic never used).
         RestAssured.given().header("X-Api-Key", "test-key")
                 .post("/mails/dlq/" + key + "/redrive")
-                .then().statusCode(anyOf(202, 503));
+                .then().statusCode(503);
+    }
+
+    @Test
+    @DisplayName("a re-drive that fails again re-parks under the SAME id, it does not breed records")
+    void a_failed_redrive_does_not_multiply_the_record() {
+        // The regression this catches was introduced by the fix above it. Once an id-less mail gets
+        // a synthetic id minted at parking time, a re-drive that fails would mint ANOTHER one — and
+        // on a compacted topic two different keys are two records that nothing ever collapses. One
+        // undelivered mail would become one more entry in the operator's list per attempt, which is
+        // the same "the ledger stops telling the truth" the keying exists to prevent, from the other
+        // direction.
+        Mockito.when(dispatcher.sendVerificationLink(any()))
+                .thenReturn(Uni.createFrom().failure(new IllegalStateException("connection refused")));
+        var deadLetters = connector.<String>sink("mail-requests-dlq");
+
+        String id = MailRequestsConsumer.UNIDENTIFIED_PREFIX + "already-parked-once";
+        connector.source("mail-requests-dlq-in").send(
+                "{\"parkedId\":\"" + id + "\",\"event\":" + anonymousVerification("again@example.com")
+                        + ",\"failure\":\"connection refused\",\"attempts\":4}");
+        await().atMost(Duration.ofSeconds(5)).until(() -> listed(id) != null);
+        int before = deadLetters.received().size();
+
+        RestAssured.given().header("X-Api-Key", "test-key")
+                .post("/mails/dlq/" + id + "/redrive")
+                .then().statusCode(503)
+                .body("status", org.hamcrest.Matchers.equalTo("PARKED_AGAIN"));
+
+        await().atMost(Duration.ofSeconds(30))
+                .until(() -> deadLetters.received().size() > before);
+        assertEquals(id, keyOf(deadLetters.received().get(before)),
+                "the re-parked record must overwrite the one the operator re-drove, not sit beside"
+                        + " it under a freshly minted id");
+
+        connector.source("mail-requests-dlq-in").send("{\"redriven\":\"" + id + "\"}");
+        await().atMost(Duration.ofSeconds(5)).until(() -> listed(id) == null);
     }
 
     @Test
@@ -134,13 +171,6 @@ class DlqLedgerKeysTest {
         // only way anything ever leaves the ledger for good.
         connector.source("mail-requests-dlq-in").send("{\"redriven\":\"" + id + "\"}");
         await().atMost(Duration.ofSeconds(5)).until(() -> listed(id) == null);
-    }
-
-    private static org.hamcrest.Matcher<Integer> anyOf(int first, int second) {
-        // the mock dispatcher's state is per-test; either answer proves the id was found, which is
-        // what this test is about — a 404 would mean it was not
-        return org.hamcrest.Matchers.anyOf(org.hamcrest.Matchers.equalTo(first),
-                org.hamcrest.Matchers.equalTo(second));
     }
 
     private static String keyOf(Message<? extends String> record) {

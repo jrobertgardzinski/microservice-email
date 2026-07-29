@@ -131,6 +131,23 @@ public class MailRequestsConsumer {
      *         retracted a mail that had just been parked again — see {@code DlqResource}.
      */
     Uni<Boolean> process(String payload) {
+        return process(payload, null);
+    }
+
+    /**
+     * The same delivery, told which identity to re-park under if it fails again.
+     *
+     * <p>A re-drive hands back an event that is already ON the dead-letter topic under a known key,
+     * and a failed re-drive parks it a second time. If that second parking mints a FRESH synthetic
+     * id — which it does for an id-less event, since the id is the only thing to derive one from —
+     * the topic ends up with two records for one undelivered mail, neither of which compaction will
+     * ever collapse into the other, and the operator's list grows one duplicate per attempt. Keeping
+     * the same key makes the re-park an overwrite, which is what it is.
+     *
+     * @param parkedIdIfItFails the id the record is already filed under, or {@code null} for a mail
+     *                          arriving from the {@code mail-requests} topic, which has none yet
+     */
+    Uni<Boolean> process(String payload, String parkedIdIfItFails) {
         JsonNode event;
         try {
             event = mapper.readTree(payload);
@@ -175,7 +192,7 @@ public class MailRequestsConsumer {
                 .onFailure().recoverWithUni(smtpDown -> {
                     LOG.errorf(smtpDown, "parking mail request %s (%s to %s) on the dead-letter "
                             + "topic after %d attempts", id, type, masked(to), SMTP_RETRIES + 1);
-                    return park(payload, smtpDown).replaceWith(false);
+                    return park(payload, smtpDown, parkedIdIfItFails).replaceWith(false);
                 });
     }
 
@@ -217,10 +234,11 @@ public class MailRequestsConsumer {
     }
 
     /** The original event plus what killed it, parked for an operator or a re-drive job. */
-    private Uni<Void> park(String payload, Throwable smtpDown) {
+    private Uni<Void> park(String payload, Throwable smtpDown, String knownParkedId) {
         // computed ONCE, here: it is the record's identity on a compacted topic, in the ledger and
-        // in its eventual retraction, and those three have to be the same string
-        String parkedId = parkedIdFor(payload);
+        // in its eventual retraction, and those three have to be the same string. A re-drive already
+        // knows it — reusing it makes the re-park overwrite the record rather than sit beside it.
+        String parkedId = knownParkedId != null ? knownParkedId : parkedIdFor(payload);
         try {
             var parked = mapper.createObjectNode();
             parked.set("event", mapper.readTree(payload));
