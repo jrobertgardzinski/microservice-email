@@ -23,3 +23,44 @@ jobs:
           cache: maven
       - name: Build and test
         run: mvn -B --no-transfer-progress clean verify
+
+      # Does the thing we just built actually START?
+      #
+      # `mvn verify` cannot answer that, and on 2026-07-29 it proved it twice in one afternoon over
+      # in microservice-security: a dependency declared with a narrower scope vanished from the
+      # runtime libs, and a bean with two constructors and no @Inject made every health endpoint
+      # 500 — both through entirely green builds. Tests run on the test classpath and build things
+      # by hand; the service runs on target/quarkus-app and is assembled by the container.
+      #
+      # No infrastructure: the broker address points at nothing on purpose. That is not a
+      # limitation of the check, it is the interesting case — /q/health/ready must go 503 AND NAME
+      # the channels, which is the assertion ChannelReadinessTest makes in-process and this one
+      # makes against the packaged app. A dead mail pipeline reporting itself healthy is the exact
+      # failure this service's probes exist for.
+      - name: Prove the packaged service boots and answers its probes
+        run: |
+          QUARKUS_HTTP_PORT=18082 MAIL_API_KEY=boot-smoke \
+            MAIL_SMTP_HOST=localhost MAIL_SMTP_PORT=1025 MAIL_FROM=smoke@example.com \
+            KAFKA_BOOTSTRAP_SERVERS=localhost:1 \
+            java -jar target/quarkus-app/quarkus-run.jar > /tmp/boot-smoke.log 2>&1 &
+          pid=$!
+          for attempt in $(seq 1 60); do
+            curl -s -o /dev/null http://localhost:18082/q/health/live && break
+            if ! kill -0 "$pid" 2>/dev/null; then
+              echo "::error::the packaged service died during startup"
+              tail -40 /tmp/boot-smoke.log
+              exit 1
+            fi
+            sleep 2
+          done
+          fail() { echo "::error::$1"; tail -40 /tmp/boot-smoke.log; kill "$pid" 2>/dev/null; exit 1; }
+          # liveness must be UP: the process is alive and its HTTP port serves. Anything else here
+          # means the app itself is broken, not that its dependencies are missing.
+          code=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:18082/q/health/live || echo 000)
+          [ "$code" = "200" ] || fail "/q/health/live answered $code — the k8s livenessProbe asks this"
+          # readiness may be 200 or 503 (no broker here); what it may NOT do is forget the channel
+          # this whole service is
+          curl -s http://localhost:18082/q/health/ready | grep -q mail-requests \
+            || fail "the readiness report does not name mail-requests — a dead mail pipeline would report itself healthy"
+          echo "/q/health/live: 200, and readiness names the mail-requests channel"
+          kill "$pid" 2>/dev/null || true
