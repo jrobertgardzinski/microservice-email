@@ -71,8 +71,24 @@ public class ParkedMails {
      * second time sent the reset link or MFA code again.
      *
      * <p>The fallbacks are for records parked by an older build. {@code event.id} still identifies
-     * most of them; the id-less ones already share ONE key on a compacted topic, so at most one of
-     * them survives there and a single ledger entry is not a loss of anything the broker still has.
+     * most of them. The id-less ones are the interesting case, and the first version of this method
+     * got it wrong: it folded them all into one constant, reasoning that "they already share ONE key
+     * on a compacted topic, so at most one of them survives there". Compaction does not work that
+     * way. The log cleaner never touches the ACTIVE segment, and on a dead-letter topic that sees a
+     * record a month the active segment may never roll — so every id-less record ever parked is
+     * still on the broker, all of them under {@code "<no id>"}, and folding them into one ledger
+     * entry means the second replayed record overwrites the first. The older undelivered mail — a
+     * verification link, a password reset, an MFA code — becomes invisible and un-redrivable while
+     * the broker still has it, which is the precise failure this ledger exists to prevent.
+     *
+     * <p>So they are keyed per record instead, by a hash of the record itself: stable across
+     * replays (the same bytes always land in the same entry, so a restart rebuilds the same list
+     * rather than a growing one) and distinct between records. The retraction still settles them —
+     * it is honoured by {@code redriven} matching the LEDGER key, which is what the re-drive was
+     * handed — even though no retraction will ever compact the underlying {@code "<no id>"} record
+     * away. That last part is a property of the old records, not of this code: a mail parked before
+     * 2026-07-29 without an id cannot be compacted by anything, and saying so is better than a
+     * comment claiming the broker already tidied them up.
      */
     private static String ledgerKey(JsonNode parked) {
         String parkedId = parked.path("parkedId").asText();
@@ -80,10 +96,12 @@ public class ParkedMails {
             return parkedId;
         }
         String eventId = parked.path("event").path("id").asText();
-        return eventId.isEmpty() ? LEGACY_UNIDENTIFIED : eventId;
+        return eventId.isEmpty()
+                ? LEGACY_UNIDENTIFIED + "-" + Integer.toHexString(parked.toString().hashCode())
+                : eventId;
     }
 
-    /** The one entry every pre-2026-07-29 id-less record collapses into — as it has on the topic. */
+    /** The prefix every pre-2026-07-29 id-less record is filed under, one entry per record. */
     static final String LEGACY_UNIDENTIFIED = "unidentified-legacy";
 
     /** What is parked right now: the event plus why it died. */

@@ -23,6 +23,7 @@ import java.time.Duration;
 import static org.awaitility.Awaitility.await;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 
@@ -171,6 +172,84 @@ class DlqLedgerKeysTest {
         // only way anything ever leaves the ledger for good.
         connector.source("mail-requests-dlq-in").send("{\"redriven\":\"" + id + "\"}");
         await().atMost(Duration.ofSeconds(5)).until(() -> listed(id) == null);
+    }
+
+    @Test
+    @DisplayName("dwa stare bezidowe rekordy to dwa wpisy — kompakcja nie tknęła aktywnego segmentu")
+    void two_legacy_id_less_records_are_two_entries() {
+        // The first version of ledgerKey folded every id-less legacy record into one constant, on
+        // the reasoning that "they already share ONE key on a compacted topic, so at most one of
+        // them survives there". The log cleaner never touches the ACTIVE segment, and on a topic
+        // that sees a record a month that segment may never roll — so both records are still on the
+        // broker, and folding them in memory means the second replay overwrites the first. The older
+        // undelivered mail (a reset link, an MFA code) becomes invisible and un-redrivable while the
+        // broker still has it: the exact loss this ledger exists to prevent, from the inside.
+        String older = "{\"event\":{\"type\":\"VERIFICATION\",\"to\":\"older@example.com\","
+                + "\"link\":\"https://app/verify?token=a\"},\"failure\":\"connection refused\",\"attempts\":4}";
+        String newer = "{\"event\":{\"type\":\"VERIFICATION\",\"to\":\"newer@example.com\","
+                + "\"link\":\"https://app/verify?token=b\"},\"failure\":\"connection refused\",\"attempts\":4}";
+        connector.source("mail-requests-dlq-in").send(older);
+        connector.source("mail-requests-dlq-in").send(newer);
+
+        await().atMost(Duration.ofSeconds(5)).until(() -> listedTo("older@example.com") != null
+                && listedTo("newer@example.com") != null);
+
+        assertNotNull(listedTo("older@example.com"),
+                "the older id-less record is gone from the operator's only window while the broker"
+                        + " still has it — one ledger key for all of them is a silent overwrite");
+        assertNotNull(listedTo("newer@example.com"));
+    }
+
+    /** The parked record whose event was addressed to this recipient, or null. */
+    private JsonNode listedTo(String recipient) {
+        try {
+            JsonNode all = mapper.readTree(RestAssured.given().header("X-Api-Key", "test-key")
+                    .get("/mails/dlq").asString());
+            for (JsonNode record : all) {
+                if (recipient.equals(record.path("event").path("to").asText())) {
+                    return record;
+                }
+            }
+            return null;
+        } catch (Exception unreadable) {
+            throw new AssertionError(unreadable);
+        }
+    }
+
+    @Test
+    @DisplayName("re-drive rekordu z event:null i z nieznanym typem — 422 i wpis zostaje na ledgerze")
+    void every_undeliverable_shape_is_refused_rather_than_swallowed() {
+        // The guard added in 48e92fa tested `record.get("event") == null` and nothing else, which
+        // covers one of three shapes. A literal "event": null parses to a NullNode — not null — and
+        // an unknown type parses fine; both reached process(), which DROPS them without parking, so
+        // the record was gone from the ledger, absent from the topic, and the operator was told
+        // "PARKED_AGAIN — the ledger will show it again". It does not.
+        record Shape(String id, String body) { }
+        java.util.List<Shape> shapes = java.util.List.of(
+                new Shape(MailRequestsConsumer.UNIDENTIFIED_PREFIX + "null-event",
+                        "{\"parkedId\":\"" + MailRequestsConsumer.UNIDENTIFIED_PREFIX
+                                + "null-event\",\"event\":null,\"failure\":\"by hand\",\"attempts\":1}"),
+                new Shape(MailRequestsConsumer.UNIDENTIFIED_PREFIX + "unknown-type",
+                        "{\"parkedId\":\"" + MailRequestsConsumer.UNIDENTIFIED_PREFIX
+                                + "unknown-type\",\"event\":{\"type\":\"NEWSLETTER\","
+                                + "\"to\":\"someone@example.com\"},\"failure\":\"by hand\",\"attempts\":1}"));
+
+        for (Shape shape : shapes) {
+            connector.source("mail-requests-dlq-in").send(shape.body());
+            await().atMost(Duration.ofSeconds(5)).until(() -> listed(shape.id()) != null);
+
+            RestAssured.given().header("X-Api-Key", "test-key")
+                    .post("/mails/dlq/" + shape.id() + "/redrive")
+                    .then().statusCode(422)
+                    .body("status", org.hamcrest.Matchers.equalTo("NOT_REDRIVABLE"));
+
+            assertNotNull(listed(shape.id()),
+                    shape.id() + " was taken off the ledger and never came back — the operator got"
+                            + " a 503 promising the ledger would show it again, and it will not");
+
+            connector.source("mail-requests-dlq-in").send("{\"redriven\":\"" + shape.id() + "\"}");
+            await().atMost(Duration.ofSeconds(5)).until(() -> listed(shape.id()) == null);
+        }
     }
 
     private static String keyOf(Message<? extends String> record) {

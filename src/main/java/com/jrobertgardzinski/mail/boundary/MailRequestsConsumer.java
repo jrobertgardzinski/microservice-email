@@ -197,6 +197,26 @@ public class MailRequestsConsumer {
     }
 
     /**
+     * The event shapes this consumer can actually deliver — the same set the switch above dispatches
+     * on, exposed so the re-drive endpoint can refuse a record instead of swallowing it.
+     *
+     * <p>{@code DlqResource} takes a record off the ledger before handing it here, and this method
+     * answers only "delivered" or "not delivered". Both drop branches — malformed JSON and an
+     * unknown type — return "not delivered" WITHOUT parking anything, so a re-drive of such a record
+     * left the operator with a 503 saying PARKED_AGAIN and an entry that had gone from the ledger
+     * and never returned to the topic. The endpoint needs to know the difference between "the world
+     * is still broken" and "this can never be delivered", and this is the cheapest honest way to
+     * tell it.
+     */
+    static boolean canBeDelivered(String type) {
+        return switch (type) {
+            case "VERIFICATION", "PASSWORD_RESET", "ACCOUNT_DELETED",
+                 "ACCOUNT_DELETION_FAILED", "ALREADY_REGISTERED", "AUTH_CODE" -> true;
+            default -> false;
+        };
+    }
+
+    /**
      * An address reduced to what an operator needs to recognise a report and no more. Every mail
      * request logged its recipient in full, and the logs go to Loki — which made the log an
      * unadvertised copy of the user table, harvestable by anyone who can read it. Two characters

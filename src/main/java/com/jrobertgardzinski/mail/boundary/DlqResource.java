@@ -45,10 +45,27 @@ public class DlqResource {
      * until the next restart. An endpoint built so that dead mail is visible made one invisible.
      */
     private Uni<Response> unreadable(String id, JsonNode record) {
+        return unreadable(id, record, "the parked record carries no 'event' to re-drive");
+    }
+
+    /**
+     * The same refusal, for every shape the consumer would DROP rather than deliver.
+     *
+     * <p>The first version of this guard tested {@code record.get("event") == null} and nothing
+     * else, which covers exactly one of the three ways a record can be undeliverable. A literal
+     * {@code "event": null} parses to a NullNode — not null — and an event whose {@code type} this
+     * consumer does not know parses fine; both went through to {@code process()}, which drops them
+     * WITHOUT parking, so the record was gone from the ledger, absent from the topic, and the
+     * operator was told "PARKED_AGAIN — the ledger will show it again". It does not. A second POST
+     * then answers 404 NOT_PARKED, which is the endpoint contradicting itself about a mail that
+     * still exists nowhere. The javadoc above promises this endpoint cannot make dead mail
+     * invisible; this is what makes the promise true for the other two shapes.
+     */
+    private Uni<Response> unreadable(String id, JsonNode record, String reason) {
         parked.restore(id, record);   // it was taken; nothing else will put it back
         return Uni.createFrom().item(Response.status(422)
                 .entity(Map.of("status", "NOT_REDRIVABLE", "id", id,
-                        "reason", "the parked record carries no 'event' to re-drive",
+                        "reason", reason,
                         "record", record))
                 .build());
     }
@@ -57,10 +74,33 @@ public class DlqResource {
     @Path("/{id}/redrive")
     public Uni<Response> redrive(@PathParam("id") String id) {
         return parked.take(id)
-                .map(record -> record.get("event") == null ? unreadable(id, record) : redrive(id, record))
+                .map(record -> notRedrivable(record)
+                        .map(reason -> unreadable(id, record, reason))
+                        .orElseGet(() -> redrive(id, record)))
                 .orElse(Uni.createFrom().item(
                         Response.status(Response.Status.NOT_FOUND)
                                 .entity(Map.of("status", "NOT_PARKED", "id", id)).build()));
+    }
+
+    /**
+     * Why this record can never be delivered, or empty when it is worth trying.
+     *
+     * <p>{@link ParkedMails} admits records of any shape on purpose — the dead-letter topic is
+     * durable and anything may be published on it by hand — so they are listable, and therefore
+     * clickable. Everything the consumer would silently drop has to be refused HERE, while the
+     * record can still be put back.
+     */
+    private java.util.Optional<String> notRedrivable(JsonNode record) {
+        JsonNode event = record.path("event");
+        if (event.isMissingNode() || event.isNull() || !event.isObject()) {
+            return java.util.Optional.of("the parked record carries no 'event' object to re-drive");
+        }
+        String type = event.path("type").asText();
+        if (!MailRequestsConsumer.canBeDelivered(type)) {
+            return java.util.Optional.of("this build has no delivery for mail type '" + type
+                    + "' — re-driving it would drop the record without parking it again");
+        }
+        return java.util.Optional.empty();
     }
 
     private Uni<Response> redrive(String id, JsonNode record) {
