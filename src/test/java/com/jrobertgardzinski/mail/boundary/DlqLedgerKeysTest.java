@@ -198,6 +198,18 @@ class DlqLedgerKeysTest {
                 "the older id-less record is gone from the operator's only window while the broker"
                         + " still has it — one ledger key for all of them is a silent overwrite");
         assertNotNull(listedTo("newer@example.com"));
+
+        // and the ledger tells the operator which id to act on, which is also how this test settles
+        // what it parked — the suite shares one application, so a test that leaves entries behind
+        // breaks the ones that count them
+        for (String recipient : java.util.List.of("older@example.com", "newer@example.com")) {
+            String key = listedTo(recipient).path("parkedId").asText();
+            assertTrue(key.startsWith(ParkedMails.LEGACY_UNIDENTIFIED),
+                    "a legacy record must be filed under a legacy key, not " + key);
+            connector.source("mail-requests-dlq-in").send("{\"redriven\":\"" + key + "\"}");
+        }
+        await().atMost(Duration.ofSeconds(5)).until(() -> listedTo("older@example.com") == null
+                && listedTo("newer@example.com") == null);
     }
 
     /** The parked record whose event was addressed to this recipient, or null. */

@@ -48,7 +48,16 @@ public class ParkedMails {
                 ledger.remove(redriven.asText());
                 return Uni.createFrom().voidItem();
             }
-            ledger.put(ledgerKey(parked), parked);
+            String key = ledgerKey(parked);
+            // Stamp the derived key into the record itself, so the listing is self-describing: the
+            // id an operator POSTs to /redrive is the one they can see. It matters for records
+            // parked before 2026-07-29, whose key is derived here rather than carried — without
+            // this, the only way to learn it would be to reimplement ledgerKey outside this class.
+            if (parked instanceof com.fasterxml.jackson.databind.node.ObjectNode object
+                    && object.path("parkedId").asText().isEmpty()) {
+                object.put("parkedId", key);
+            }
+            ledger.put(key, parked);
         } catch (Exception malformed) {
             // never the payload: a parked record wraps the original event, reset links and MFA codes
             // included, and these logs ship to Loki
