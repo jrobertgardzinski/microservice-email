@@ -218,36 +218,66 @@ public class MailRequestsConsumer {
 
     /** The original event plus what killed it, parked for an operator or a re-drive job. */
     private Uni<Void> park(String payload, Throwable smtpDown) {
+        // computed ONCE, here: it is the record's identity on a compacted topic, in the ledger and
+        // in its eventual retraction, and those three have to be the same string
+        String parkedId = parkedIdFor(payload);
         try {
             var parked = mapper.createObjectNode();
             parked.set("event", mapper.readTree(payload));
             parked.put("failure", String.valueOf(smtpDown.getMessage()))
-                    .put("attempts", SMTP_RETRIES + 1);
+                    .put("attempts", SMTP_RETRIES + 1)
+                    // written INTO the record, so the ledger keys itself the same way the topic is
+                    // keyed without having to reach for the Kafka metadata
+                    .put("parkedId", parkedId);
             return Uni.createFrom().completionStage(
-                            sendKeyed(eventId(payload), mapper.writeValueAsString(parked)))
+                            sendKeyed(parkedId, mapper.writeValueAsString(parked)))
                     .onFailure().recoverWithUni(dlqDown -> {
                         // no payload: at THIS point it parsed, so it is a real event carrying a real
                         // reset link or MFA code, and this is the one branch where it would reach the
                         // log intact. The id is enough to correlate with the topic.
                         LOG.errorf(dlqDown, "the dead-letter topic is down too; mail request %s "
-                                + "(%d bytes) is lost", eventId(payload), payload.length());
+                                + "(%d bytes) is lost", parkedId, payload.length());
                         return Uni.createFrom().voidItem();
                     });
         } catch (Exception impossible) {
-            LOG.errorf(impossible, "could not park mail request %s", eventId(payload));
+            LOG.errorf(impossible, "could not park mail request %s", parkedId);
             return Uni.createFrom().voidItem();
         }
     }
 
-    /** The event's id, or a placeholder — used where the alternative would be logging the payload. */
-    private String eventId(String payload) {
+    /**
+     * The identity a parked record is keyed by: the event's own id when it has one, and otherwise a
+     * synthetic one that is <b>stable and unique</b>.
+     *
+     * <p>Both properties are load-bearing, and neither was there. Every id-less event was keyed
+     * {@code "<no id>"} — one Kafka key for all of them, on a topic whose {@code cleanup.policy} is
+     * {@code compact}. Park two id-less mails and the broker keeps only the second: the sole durable
+     * record of the first undelivered mail destroyed, with no log line anywhere, which is precisely
+     * the silent destruction of evidence the keying was introduced to end. Meanwhile the ledger gave
+     * the same records a DIFFERENT and non-monotonic key ({@code "unidentified-" + ledger.size()},
+     * which {@code take()} and eviction walk backwards), so entries overwrote one another in memory
+     * and every retraction was published under a key no parked record ever had — settled mails came
+     * back from the dead at the next restart, and a second re-drive sent the reset or MFA mail
+     * twice.
+     *
+     * <p>A UUID minted at parking time and carried in the record fixes all of it at once: unique, so
+     * compaction keeps every distinct parked mail; stable, so the ledger, the topic and the
+     * retraction agree for ever, including across restarts.
+     */
+    private String parkedIdFor(String payload) {
         try {
             String id = mapper.readTree(payload).path("id").asText();
-            return id.isEmpty() ? "<no id>" : id;
+            if (!id.isEmpty()) {
+                return id;
+            }
         } catch (Exception unreadable) {
-            return "<unreadable>";
+            // fall through: an event we cannot read still deserves a record of its own
         }
+        return UNIDENTIFIED_PREFIX + java.util.UUID.randomUUID();
     }
+
+    /** How a synthetic parked id announces itself to an operator reading {@code /mails/dlq}. */
+    static final String UNIDENTIFIED_PREFIX = "unidentified-";
 
     /**
      * How long ONE attempt may take before it counts as failed.

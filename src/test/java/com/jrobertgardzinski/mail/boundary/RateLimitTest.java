@@ -51,4 +51,5 @@ class RateLimitTest {
         assertEquals("RATE_LIMITED", refused.jsonPath().getString("status"));
         assertNotNull(refused.header("Retry-After"), "a polite refusal says when to come back");
     }
+
 }

@@ -48,8 +48,7 @@ public class ParkedMails {
                 ledger.remove(redriven.asText());
                 return Uni.createFrom().voidItem();
             }
-            String id = parked.path("event").path("id").asText();
-            ledger.put(id.isEmpty() ? "unidentified-" + ledger.size() : id, parked);
+            ledger.put(ledgerKey(parked), parked);
         } catch (Exception malformed) {
             // never the payload: a parked record wraps the original event, reset links and MFA codes
             // included, and these logs ship to Loki
@@ -57,6 +56,35 @@ public class ParkedMails {
         }
         return Uni.createFrom().voidItem();
     }
+
+    /**
+     * The key a parked record is filed under — <b>the same string the record is keyed by on the
+     * topic</b>, so that the ledger, the compacted topic and the retraction that eventually settles
+     * it all name one thing.
+     *
+     * <p>{@code parkedId} is written by {@code MailRequestsConsumer#park} and is the event's own id
+     * when it had one. This ledger used to derive its own key instead — {@code event.id}, or
+     * {@code "unidentified-" + ledger.size()} when there was none. That counter is not monotonic
+     * ({@code take()} and eviction shrink the map), so two id-less mails could collide in memory,
+     * and it matched nothing on the topic, so a retraction published under it removed nothing:
+     * settled mails climbed back into the operator's list after every restart, and re-driving one a
+     * second time sent the reset link or MFA code again.
+     *
+     * <p>The fallbacks are for records parked by an older build. {@code event.id} still identifies
+     * most of them; the id-less ones already share ONE key on a compacted topic, so at most one of
+     * them survives there and a single ledger entry is not a loss of anything the broker still has.
+     */
+    private static String ledgerKey(JsonNode parked) {
+        String parkedId = parked.path("parkedId").asText();
+        if (!parkedId.isEmpty()) {
+            return parkedId;
+        }
+        String eventId = parked.path("event").path("id").asText();
+        return eventId.isEmpty() ? LEGACY_UNIDENTIFIED : eventId;
+    }
+
+    /** The one entry every pre-2026-07-29 id-less record collapses into — as it has on the topic. */
+    static final String LEGACY_UNIDENTIFIED = "unidentified-legacy";
 
     /** What is parked right now: the event plus why it died. */
     public List<JsonNode> all() {
@@ -68,5 +96,17 @@ public class ParkedMails {
     /** Take one parked event off the ledger for a re-drive (it returns if it fails again). */
     public Optional<JsonNode> take(String id) {
         return Optional.ofNullable(ledger.remove(id));
+    }
+
+    /**
+     * Put back a record that was taken but could not be re-driven at all.
+     *
+     * <p>The normal failure path needs nothing of the sort: a re-drive that fails is parked again by
+     * the consumer, the record comes back down the dead-letter channel, and the ledger rebuilds
+     * itself. A record whose shape the re-drive cannot even read never reaches that path, so without
+     * this it would simply vanish from the operator's only window — see {@code DlqResource}.
+     */
+    public void restore(String id, JsonNode record) {
+        ledger.put(id, record);
     }
 }

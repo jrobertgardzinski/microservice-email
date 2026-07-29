@@ -25,13 +25,21 @@ import static org.hamcrest.Matchers.is;
 class HealthEndpointTest {
 
     @Test
-    @DisplayName("readiness answers, and names the mail-requests channel among its checks")
-    void readiness_reports_the_kafka_channels() {
+    @DisplayName("readiness answers, and the reactive-messaging check is what it answers with")
+    void readiness_reports_the_messaging_subsystem() {
         RestAssured.given().get("/q/health/ready")
                 .then().statusCode(200)
                 .body("status", is("UP"))
                 // the point is not that SOMETHING answers — a bare 200 would be no better than the
-                // TCP probe it replaces. The channels have to be what is being reported on.
+                // TCP probe it replaces.
+                //
+                // This is the UMBRELLA's name, and that is all it is. The @DisplayName used to
+                // claim this line names the mail-requests CHANNEL, and a comment underneath
+                // insisted "the channels have to be what is being reported on" — while the string
+                // "mail-requests" appeared nowhere in the file. Under the test profile the channels
+                // run on the in-memory connector, which contributes no per-channel data at all, so
+                // the assertion this class needed could not be written here. It is written in
+                // ChannelReadinessTest, which stands the Kafka connector up instead.
                 .body("checks.name", hasItem("SmallRye Reactive Messaging - readiness check"));
     }
 
