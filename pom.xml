@@ -21,7 +21,7 @@
         <quarkus.platform.artifact-id>quarkus-bom</quarkus.platform.artifact-id>
         <quarkus.platform.version>3.27.0</quarkus.platform.version>
         <quarkus-cucumber.version>1.3.0</quarkus-cucumber.version>
-        <allure.version>2.29.0</allure.version>
+        <allure.version>2.35.4</allure.version>
         <pact.version>4.6.17</pact.version>
         <compiler-plugin.version>3.13.0</compiler-plugin.version>
         <surefire-plugin.version>3.5.2</surefire-plugin.version>
