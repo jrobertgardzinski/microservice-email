@@ -122,6 +122,19 @@ public class DlqResource {
                         // still broken: the event is back on the dead-letter topic, the ledger will
                         // show it again, and the operator is told the truth
                         : Uni.createFrom().item(Response.status(503)
-                                .entity(Map.of("status", "PARKED_AGAIN", "id", id)).build()));
+                                .entity(Map.of("status", "PARKED_AGAIN", "id", id)).build()))
+                // Re-parking can itself be refused, and the consumer now says so instead of
+                // reporting PARKED_AGAIN for a record that went nowhere. The entry was already TAKEN
+                // off the ledger, so put it back: the ORIGINAL parked record is still on the
+                // dead-letter topic (only a delivered mail is ever retracted), but the ledger is
+                // rebuilt at startup only, so without this the operator's single window would close
+                // on an undelivered mail until the next restart.
+                .onFailure().recoverWithItem(notParkedAgain -> {
+                    parked.restore(id, record);
+                    return Response.status(503)
+                            .entity(Map.of("status", "PARK_FAILED", "id", id,
+                                    "reason", "the mail could not be sent and could not be parked "
+                                            + "again: " + notParkedAgain.getMessage())).build();
+                });
     }
 }

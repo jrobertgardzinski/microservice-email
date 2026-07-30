@@ -31,7 +31,8 @@ import java.util.Set;
  * one bad event never wedges the partition. An SMTP hiccup is retried with backoff; only a send
  * that keeps failing is given up on (logged loudly) — and an event is remembered as processed
  * ONLY after its mail actually went out, so a redelivery after a crash still delivers. A send
- * that keeps failing is PARKED on the dead-letter topic with the failure attached — nothing is
+ * that keeps failing is PARKED on the dead-letter topic with the failure attached, and if even
+ * that write is refused the record is left UNACKNOWLEDGED instead of being dropped — nothing is
  * silently lost, and an operator (or a future re-drive job) finds the whole story in one place.
  */
 @ApplicationScoped
@@ -105,9 +106,23 @@ public class MailRequestsConsumer {
         }
         try {
             // the ack rides on SETTLED, not on delivered: a parked mail is handled too — its
-            // record is on the dead-letter topic, and not acking would replay it for ever
+            // record is on the dead-letter topic, and not acking would replay it for ever.
+            //
+            // A mail that is NEITHER delivered NOR parked is the third case, and it used to be
+            // acknowledged along with the other two: park() swallowed its own failure, logged that
+            // the request "is lost", and the offset moved on — while security's outbox row was
+            // already marked published, so nothing anywhere would ever try again. A PASSWORD_RESET
+            // vanished for good. It is now left UNSETTLED on purpose: neither acked nor nacked. The
+            // `throttled` commit strategy never commits past an unacknowledged record, so the
+            // request stays on `mail-requests` and is redelivered when the pod restarts — the loss
+            // becomes a delay. A nack would be worse either way: the default `fail` strategy stops
+            // the consumer client outright (no mail at all leaves the building, the very outcome
+            // the disabled age watchdog was disabled to avoid), and `ignore` COMMITS the record
+            // (KafkaIgnoreFailure calls record.ack()), which is exactly the loss being closed here.
             return process(message.getPayload())
-                    .chain(settled -> Uni.createFrom().completionStage(message.ack()));
+                    .onItemOrFailure().transformToUni((settled, notSettled) -> notSettled == null
+                            ? Uni.createFrom().completionStage(message.ack())
+                            : Uni.createFrom().voidItem());
         } finally {
             MDC.remove("cid");
         }
@@ -129,6 +144,10 @@ public class MailRequestsConsumer {
      *         completed successfully and a caller had no way at all to tell a delivery from a
      *         parking. The re-drive endpoint chained its retraction onto that Uni and therefore
      *         retracted a mail that had just been parked again — see {@code DlqResource}.
+     *         <p>The Uni now FAILS for the third outcome, the one that has no boolean: the mail
+     *         went nowhere and could not be parked either. Every caller must treat that as "this
+     *         record is still owed to somebody" — {@link #consume(Message)} by not acknowledging
+     *         it, {@code DlqResource} by putting it back on the operator's ledger.
      */
     Uni<Boolean> process(String payload) {
         return process(payload, null);
@@ -253,7 +272,18 @@ public class MailRequestsConsumer {
         }
     }
 
-    /** The original event plus what killed it, parked for an operator or a re-drive job. */
+    /**
+     * The original event plus what killed it, parked for an operator or a re-drive job.
+     *
+     * @return a Uni that FAILS when the record could not be written to the dead-letter topic at all.
+     *         That failure used to be swallowed here: the branch logged that the mail "is lost" and
+     *         handed back a successful Uni, so {@link #consume(Message)} acknowledged a mail that
+     *         was neither delivered nor parked. The offset moved past it, the dead-letter topic
+     *         never received it, and security's outbox row was already marked published — a
+     *         password-reset or MFA mail with no retry mechanism anywhere in the system, which is
+     *         the opposite of what this class promises. The failure now travels to the caller, whose
+     *         job it is to keep the record owed.
+     */
     private Uni<Void> park(String payload, Throwable smtpDown, String knownParkedId) {
         // computed ONCE, here: it is the record's identity on a compacted topic, in the ledger and
         // in its eventual retraction, and those three have to be the same string. A re-drive already
@@ -269,17 +299,17 @@ public class MailRequestsConsumer {
                     .put("parkedId", parkedId);
             return Uni.createFrom().completionStage(
                             sendKeyed(parkedId, mapper.writeValueAsString(parked)))
-                    .onFailure().recoverWithUni(dlqDown -> {
-                        // no payload: at THIS point it parsed, so it is a real event carrying a real
-                        // reset link or MFA code, and this is the one branch where it would reach the
-                        // log intact. The id is enough to correlate with the topic.
-                        LOG.errorf(dlqDown, "the dead-letter topic is down too; mail request %s "
-                                + "(%d bytes) is lost", parkedId, payload.length());
-                        return Uni.createFrom().voidItem();
-                    });
+                    // the log is kept, the swallow is not: the failure has to reach the caller
+                    .onFailure().invoke(dlqDown ->
+                            // no payload: at THIS point it parsed, so it is a real event carrying a
+                            // real reset link or MFA code, and this is the one branch where it would
+                            // reach the log intact. The id is enough to correlate with the topic.
+                            LOG.errorf(dlqDown, "the dead-letter topic is down too; mail request %s "
+                                    + "(%d bytes) is neither delivered nor parked — leaving it "
+                                    + "unacknowledged so it comes back", parkedId, payload.length()));
         } catch (Exception impossible) {
             LOG.errorf(impossible, "could not park mail request %s", parkedId);
-            return Uni.createFrom().voidItem();
+            return Uni.createFrom().failure(impossible);
         }
     }
 
