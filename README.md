@@ -15,6 +15,32 @@ command here and it delivers it. Deliberately a **different architecture** from 
 Infrastructure: **Quarkus** (`quarkus-rest-jackson` + `quarkus-mailer` + Qute templates). Tests use
 Quarkus' `MockMailbox`, so no real SMTP is touched.
 
+### What this service does NOT share with the email LIBRARIES (recorded 2026-10-03)
+
+A layers review kept rediscovering this, so it is written down once. Two facts, both verified in
+the code:
+
+1. **The address invariants here are framework annotations, not domain types.**
+   `entity/Mail` is `record Mail(@NotBlank @Email String to, …)` and `entity/LinkMail` is the
+   same shape — `jakarta.validation.constraints`, checked by `@Valid` at the boundary, with the
+   fields staying `String` inside.
+2. **The `pom.xml` does not depend on `email-domain`** (nor on `constraint`). The mail-sending
+   service therefore does not use the `Supplier<VO>` + `sealed Outcome` bridge that the
+   `shared/email` and `shared/password` libraries exist to carry — no `Email` value object, no
+   `InvalidEmailException` code, no `Outcome` variant.
+
+**This is the BCE choice, not an oversight.** `shared/CLAUDE.md` names this service "the mail
+service (`microservice-email`, BCE Quarkus)", and the point of BCE here is that the boundary is
+the only validator: the control may assume a well-formed message, which is what the javadoc on
+`Mail` says. A `to` field is an argument of an outbound command, not an aggregate this service
+owns the lifecycle of — the account and its address live in `microservice-security`, which does
+build `Email` through the library before the mail is ever requested.
+
+So the shape is consistent with itself; the open question is only whether the owner wants the
+kernel's bridge reused HERE for symmetry (gaining typed refusals and one vocabulary, paying with a
+dependency from a BCE service onto a hexagon's library). **That is an architecture decision for
+the owner — not something to refactor in passing.**
+
 ## Contract
 
 Every request must present the shared secret in the `X-Api-Key` header (else `401` — the service is
